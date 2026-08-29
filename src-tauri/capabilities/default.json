@@ -10,6 +10,8 @@
     "dialog:default",
     "fs:default",
     "fs:allow-write-text-file",
+    "sql:default",
+    "sql:allow-execute",
     "allow-start-monitor",
     "allow-stop-monitor",
     "allow-get-active-session",

@@ -18,6 +18,13 @@ import type {
   MonitoringEvent,
   SessionView,
 } from "@/features/monitoring/types";
+import {
+  loadPersistedSessions,
+  mergeSessionLists,
+  persistSession,
+  persistSessions,
+} from "@/lib/db/repository";
+import { computeAppStats } from "@/lib/db/stats";
 
 interface MonitoringContextValue {
   monitoring: boolean;
@@ -54,6 +61,8 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
   const [agentLoading, setAgentLoading] = useState(true);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Sesiones ya persistidas en SQLite (Fase 4): se mezclan con las vivas.
+  const persistedRef = useRef<SessionView[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -63,7 +72,7 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
         invoke<AppStatsView[]>("get_app_stats"),
       ]);
       setActive(activeSession ?? null);
-      setSessions(history ?? []);
+      setSessions(mergeSessionLists(history ?? [], persistedRef.current));
       setAppStats(stats ?? []);
     } catch {
       // ignore
@@ -82,8 +91,18 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
             if ("session_start" in payload) {
               setActive(payload.session_start);
             } else if ("session_end" in payload) {
+              const ended = payload.session_end;
+              // Fase 4: cerrar la sesión también la guarda en SQLite local.
+              persistSession(ended).catch((e) =>
+                console.error("persistSession:", e),
+              );
               setActive(null);
-              setSessions((prev) => [...prev.slice(-49), payload.session_end]);
+              setSessions((prev) =>
+                mergeSessionLists(
+                  [...prev.slice(-49), ended],
+                  persistedRef.current,
+                ),
+              );
             } else if ("activity_change" in payload) {
               setState(payload.activity_change.state);
             }
@@ -94,6 +113,22 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
         // Fuera de Tauri.
       }
     }
+
+    // Fase 4: al arrancar la app, recuperar el historial persistido en SQLite
+    // para mostrarlo aunque el motor de monitorización no esté activo.
+    (async () => {
+      try {
+        const persisted = await loadPersistedSessions();
+        if (cancelled) return;
+        persistedRef.current = persisted;
+        setSessions((prev) => mergeSessionLists(prev, persisted));
+        setAppStats((prev) =>
+          prev.length > 0 ? prev : computeAppStats(persisted),
+        );
+      } catch (e) {
+        console.error("loadPersistedSessions:", e);
+      }
+    })();
 
     attach();
     return () => {
@@ -175,7 +210,12 @@ export function MonitoringProvider({ children }: { children: ReactNode }) {
     try {
       const result = await invoke<[SessionView[], AppStatsView[]]>("stop_monitor");
       const [finalSessions, finalStats] = result;
-      setSessions(finalSessions);
+      // Fase 4: persistir todas las sesiones cerradas al detener el motor
+      // (idempotente: no duplica lo ya guardado por los eventos).
+      persistSessions(finalSessions).catch((e) =>
+        console.error("persistSessions:", e),
+      );
+      setSessions(mergeSessionLists(finalSessions, persistedRef.current));
       setAppStats(finalStats);
       setActive(null);
       setMonitoring(false);

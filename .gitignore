@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# instaladores locales de prueba (nunca subir binarios)
+/dist-linux/
